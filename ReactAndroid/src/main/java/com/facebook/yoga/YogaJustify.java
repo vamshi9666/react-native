@@ -1,17 +1,12 @@
 /*
- * Copyright (c) 2014-present, Facebook, Inc.
- * All rights reserved.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
- * This source code is licensed under the BSD-style license found in the
- * LICENSE file in the root directory of this source tree. An additional grant
- * of patent rights can be found in the PATENTS file in the same directory.
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
  */
 
 package com.facebook.yoga;
 
-import com.facebook.proguard.annotations.DoNotStrip;
-
-@DoNotStrip
 public enum YogaJustify {
   FLEX_START(0),
   CENTER(1),
@@ -20,7 +15,7 @@ public enum YogaJustify {
   SPACE_AROUND(4),
   SPACE_EVENLY(5);
 
-  private int mIntValue;
+  private final int mIntValue;
 
   YogaJustify(int intValue) {
     mIntValue = intValue;

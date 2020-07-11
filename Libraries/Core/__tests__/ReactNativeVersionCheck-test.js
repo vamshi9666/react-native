@@ -1,14 +1,13 @@
 /**
- * Copyright (c) 2017-present, Facebook, Inc.
- * All rights reserved.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
- * This source code is licensed under the BSD-style license found in the
- * LICENSE file in the root directory of this source tree. An additional grant
- * of patent rights can be found in the PATENTS file in the same directory.
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
  *
  * @format
  * @emails oncall+react_native
  */
+
 'use strict';
 
 describe('checkVersion', () => {
@@ -61,8 +60,8 @@ function _defineCheckVersionTests() {
     _mockJsVersion(0, 0, 0);
     _mockNativeVersion(0, 0, 0);
 
-    const ReactNativeVersion = require('ReactNativeVersion');
-    const ReactNativeVersionCheck = require('ReactNativeVersionCheck');
+    const ReactNativeVersion = require('../ReactNativeVersion');
+    const ReactNativeVersionCheck = require('../ReactNativeVersionCheck');
     expect(ReactNativeVersion).toMatchObject({
       version: {major: 0, minor: 0, patch: 0, prerelease: null},
     });
@@ -73,7 +72,7 @@ function _defineCheckVersionTests() {
     _mockJsVersion(0, 1, 0);
     _mockNativeVersion(0, 1, 0);
 
-    const ReactNativeVersionCheck = require('ReactNativeVersionCheck');
+    const ReactNativeVersionCheck = require('../ReactNativeVersionCheck');
     expect(() => ReactNativeVersionCheck.checkVersions()).not.toThrow();
   });
 
@@ -81,7 +80,7 @@ function _defineCheckVersionTests() {
     _mockJsVersion(0, 1, 0);
     _mockNativeVersion(0, 2, 0);
 
-    const ReactNativeVersionCheck = require('ReactNativeVersionCheck');
+    const ReactNativeVersionCheck = require('../ReactNativeVersionCheck');
 
     ReactNativeVersionCheck.checkVersions();
     expect(spyOnConsoleError).toHaveBeenCalledTimes(1);
@@ -92,7 +91,7 @@ function _defineCheckVersionTests() {
     _mockJsVersion(1, 0, 0);
     _mockNativeVersion(2, 0, 0);
 
-    const ReactNativeVersionCheck = require('ReactNativeVersionCheck');
+    const ReactNativeVersionCheck = require('../ReactNativeVersionCheck');
     ReactNativeVersionCheck.checkVersions();
     expect(spyOnConsoleError).toHaveBeenCalledTimes(1);
     expect(consoleOutput).toMatch(/React Native version mismatch/);
@@ -102,7 +101,7 @@ function _defineCheckVersionTests() {
     _mockJsVersion(0, 1, 0);
     _mockNativeVersion(0, 1, 2);
 
-    const ReactNativeVersionCheck = require('ReactNativeVersionCheck');
+    const ReactNativeVersionCheck = require('../ReactNativeVersionCheck');
     ReactNativeVersionCheck.checkVersions();
     expect(spyOnConsoleError).toHaveBeenCalledTimes(0);
   });
@@ -111,14 +110,14 @@ function _defineCheckVersionTests() {
     _mockJsVersion(0, 1, 0, 'beta.0');
     _mockNativeVersion(0, 1, 0, 'alpha.1');
 
-    const ReactNativeVersionCheck = require('ReactNativeVersionCheck');
+    const ReactNativeVersionCheck = require('../ReactNativeVersionCheck');
     ReactNativeVersionCheck.checkVersions();
     expect(spyOnConsoleError).toHaveBeenCalledTimes(0);
   });
 }
 
 function _mockJsVersion(major = 0, minor = 0, patch = 0, prerelease = null) {
-  jest.doMock('ReactNativeVersion', () => ({
+  jest.doMock('../ReactNativeVersion', () => ({
     version: {major, minor, patch, prerelease},
   }));
 }
@@ -129,9 +128,14 @@ function _mockNativeVersion(
   patch = 0,
   prerelease = null,
 ) {
-  jest.doMock('NativeModules', () => ({
-    PlatformConstants: {
+  jest.doMock('../../Utilities/NativePlatformConstantsAndroid', () => ({
+    getConstants: () => ({
       reactNativeVersion: {major, minor, patch, prerelease},
-    },
+    }),
+  }));
+  jest.doMock('../../Utilities/NativePlatformConstantsIOS', () => ({
+    getConstants: () => ({
+      reactNativeVersion: {major, minor, patch, prerelease},
+    }),
   }));
 }

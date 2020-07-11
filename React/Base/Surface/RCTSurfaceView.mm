@@ -1,10 +1,8 @@
-/**
- * Copyright (c) 2015-present, Facebook, Inc.
- * All rights reserved.
+/*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
- * This source code is licensed under the BSD-style license found in the
- * LICENSE file in the root directory of this source tree. An additional grant
- * of patent rights can be found in the PATENTS file in the same directory.
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
  */
 
 #import "RCTSurfaceView.h"
@@ -19,9 +17,9 @@
   RCTSurfaceStage _stage;
 }
 
-RCT_NOT_IMPLEMENTED(- (instancetype)init)
-RCT_NOT_IMPLEMENTED(- (instancetype)initWithFrame:(CGRect)frame)
-RCT_NOT_IMPLEMENTED(- (nullable instancetype)initWithCoder:(NSCoder *)coder)
+RCT_NOT_IMPLEMENTED(-(instancetype)init)
+RCT_NOT_IMPLEMENTED(-(instancetype)initWithFrame : (CGRect)frame)
+RCT_NOT_IMPLEMENTED(-(nullable instancetype)initWithCoder : (NSCoder *)coder)
 
 - (instancetype)initWithSurface:(RCTSurface *)surface
 {
@@ -35,7 +33,7 @@ RCT_NOT_IMPLEMENTED(- (nullable instancetype)initWithCoder:(NSCoder *)coder)
 
 #pragma mark - Internal Interface
 
-- (void)setRootView:(RCTSurfaceRootView *)rootView
+- (void)setRootView:(RCTSurfaceRootView *_Nullable)rootView
 {
   if (_rootView == rootView) {
     return;
@@ -74,11 +72,10 @@ RCT_NOT_IMPLEMENTED(- (nullable instancetype)initWithCoder:(NSCoder *)coder)
 - (void)_updateStage
 {
   if (RCTSurfaceStageIsRunning(_stage)) {
-    if (_rootView.superview != self) {
+    if (_rootView && _rootView.superview != self) {
       [self addSubview:_rootView];
     }
-  }
-  else {
+  } else {
     [_rootView removeFromSuperview];
   }
 }

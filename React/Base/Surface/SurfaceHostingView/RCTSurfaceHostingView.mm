@@ -1,21 +1,20 @@
-/**
- * Copyright (c) 2015-present, Facebook, Inc.
- * All rights reserved.
+/*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
- * This source code is licensed under the BSD-style license found in the
- * LICENSE file in the root directory of this source tree. An additional grant
- * of patent rights can be found in the PATENTS file in the same directory.
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
  */
 
 #import "RCTSurfaceHostingView.h"
 
+#import "RCTConstants.h"
 #import "RCTDefines.h"
 #import "RCTSurface.h"
 #import "RCTSurfaceDelegate.h"
 #import "RCTSurfaceView.h"
 #import "RCTUtils.h"
 
-@interface RCTSurfaceHostingView () <RCTSurfaceDelegate>
+@interface RCTSurfaceHostingView ()
 
 @property (nonatomic, assign) BOOL isActivityIndicatorViewVisible;
 @property (nonatomic, assign) BOOL isSurfaceViewVisible;
@@ -28,30 +27,34 @@
   RCTSurfaceStage _stage;
 }
 
-RCT_NOT_IMPLEMENTED(- (instancetype)init)
-RCT_NOT_IMPLEMENTED(- (instancetype)initWithFrame:(CGRect)frame)
-RCT_NOT_IMPLEMENTED(- (nullable instancetype)initWithCoder:(NSCoder *)coder)
++ (RCTSurface *)createSurfaceWithBridge:(RCTBridge *)bridge
+                             moduleName:(NSString *)moduleName
+                      initialProperties:(NSDictionary *)initialProperties
+{
+  return [[RCTSurface alloc] initWithBridge:bridge moduleName:moduleName initialProperties:initialProperties];
+}
+
+RCT_NOT_IMPLEMENTED(-(instancetype)init)
+RCT_NOT_IMPLEMENTED(-(instancetype)initWithFrame : (CGRect)frame)
+RCT_NOT_IMPLEMENTED(-(nullable instancetype)initWithCoder : (NSCoder *)coder)
 
 - (instancetype)initWithBridge:(RCTBridge *)bridge
                     moduleName:(NSString *)moduleName
              initialProperties:(NSDictionary *)initialProperties
+               sizeMeasureMode:(RCTSurfaceSizeMeasureMode)sizeMeasureMode
 {
-  RCTSurface *surface =
-    [[RCTSurface alloc] initWithBridge:bridge
-                            moduleName:moduleName
-                     initialProperties:initialProperties];
-
-  return [self initWithSurface:surface];
+  RCTSurface *surface = [[self class] createSurfaceWithBridge:bridge
+                                                   moduleName:moduleName
+                                            initialProperties:initialProperties];
+  [surface start];
+  return [self initWithSurface:surface sizeMeasureMode:sizeMeasureMode];
 }
 
-- (instancetype)initWithSurface:(RCTSurface *)surface
+- (instancetype)initWithSurface:(RCTSurface *)surface sizeMeasureMode:(RCTSurfaceSizeMeasureMode)sizeMeasureMode
 {
   if (self = [super initWithFrame:CGRectZero]) {
     _surface = surface;
-
-    _sizeMeasureMode =
-      RCTSurfaceSizeMeasureModeWidthAtMost |
-      RCTSurfaceSizeMeasureModeHeightAtMost;
+    _sizeMeasureMode = sizeMeasureMode;
 
     _surface.delegate = self;
     _stage = surface.stage;
@@ -59,6 +62,11 @@ RCT_NOT_IMPLEMENTED(- (nullable instancetype)initWithCoder:(NSCoder *)coder)
   }
 
   return self;
+}
+
+- (void)dealloc
+{
+  [_surface stop];
 }
 
 - (void)setFrame:(CGRect)frame
@@ -69,14 +77,9 @@ RCT_NOT_IMPLEMENTED(- (nullable instancetype)initWithCoder:(NSCoder *)coder)
   CGSize maximumSize;
 
   RCTSurfaceMinimumSizeAndMaximumSizeFromSizeAndSizeMeasureMode(
-    self.bounds.size,
-    _sizeMeasureMode,
-    minimumSize,
-    maximumSize
-  );
+      self.bounds.size, _sizeMeasureMode, &minimumSize, &maximumSize);
 
-  [_surface setMinimumSize:minimumSize
-               maximumSize:maximumSize];
+  [_surface setMinimumSize:minimumSize maximumSize:maximumSize];
 }
 
 - (CGSize)intrinsicContentSize
@@ -105,15 +108,9 @@ RCT_NOT_IMPLEMENTED(- (nullable instancetype)initWithCoder:(NSCoder *)coder)
   CGSize minimumSize;
   CGSize maximumSize;
 
-  RCTSurfaceMinimumSizeAndMaximumSizeFromSizeAndSizeMeasureMode(
-    size,
-    _sizeMeasureMode,
-    minimumSize,
-    maximumSize
-  );
+  RCTSurfaceMinimumSizeAndMaximumSizeFromSizeAndSizeMeasureMode(size, _sizeMeasureMode, &minimumSize, &maximumSize);
 
-  return [_surface sizeThatFitsMinimumSize:minimumSize
-                               maximumSize:maximumSize];
+  return [_surface sizeThatFitsMinimumSize:minimumSize maximumSize:maximumSize];
 }
 
 - (void)setStage:(RCTSurfaceStage)stage
@@ -122,9 +119,8 @@ RCT_NOT_IMPLEMENTED(- (nullable instancetype)initWithCoder:(NSCoder *)coder)
     return;
   }
 
-  BOOL shouldInvalidateLayout =
-    RCTSurfaceStageIsRunning(stage) != RCTSurfaceStageIsRunning(_stage) ||
-    RCTSurfaceStageIsPreparing(stage) != RCTSurfaceStageIsPreparing(_stage);
+  BOOL shouldInvalidateLayout = RCTSurfaceStageIsRunning(stage) != RCTSurfaceStageIsRunning(_stage) ||
+      RCTSurfaceStageIsPreparing(stage) != RCTSurfaceStageIsPreparing(_stage);
 
   _stage = stage;
 
@@ -199,6 +195,19 @@ RCT_NOT_IMPLEMENTED(- (nullable instancetype)initWithCoder:(NSCoder *)coder)
   }
 }
 
+#pragma mark - UITraitCollection updates
+
+- (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection
+{
+  [super traitCollectionDidChange:previousTraitCollection];
+  [[NSNotificationCenter defaultCenter]
+      postNotificationName:RCTUserInterfaceStyleDidChangeNotification
+                    object:self
+                  userInfo:@{
+                    RCTUserInterfaceStyleDidChangeNotificationTraitCollectionKey : self.traitCollection,
+                  }];
+}
+
 #pragma mark - Private stuff
 
 - (void)_invalidateLayout
@@ -221,14 +230,14 @@ RCT_NOT_IMPLEMENTED(- (nullable instancetype)initWithCoder:(NSCoder *)coder)
 
 #pragma mark - RCTSurfaceDelegate
 
-- (void)surface:(RCTSurface *)surface didChangeStage:(RCTSurfaceStage)stage
+- (void)surface:(__unused RCTSurface *)surface didChangeStage:(RCTSurfaceStage)stage
 {
   RCTExecuteOnMainQueue(^{
     [self setStage:stage];
   });
 }
 
-- (void)surface:(RCTSurface *)surface didChangeIntrinsicSize:(CGSize)intrinsicSize
+- (void)surface:(__unused RCTSurface *)surface didChangeIntrinsicSize:(__unused CGSize)intrinsicSize
 {
   RCTExecuteOnMainQueue(^{
     [self _invalidateLayout];

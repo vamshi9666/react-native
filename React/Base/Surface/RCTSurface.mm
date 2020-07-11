@@ -1,16 +1,16 @@
-/**
- * Copyright (c) 2015-present, Facebook, Inc.
- * All rights reserved.
+/*
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
- * This source code is licensed under the BSD-style license found in the
- * LICENSE file in the root directory of this source tree. An additional grant
- * of patent rights can be found in the PATENTS file in the same directory.
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
  */
 
 #import "RCTSurface.h"
 #import "RCTSurfaceView+Internal.h"
 
 #import <mutex>
+
+#import <stdatomic.h>
 
 #import "RCTAssert.h"
 #import "RCTBridge+Private.h"
@@ -23,9 +23,10 @@
 #import "RCTSurfaceView.h"
 #import "RCTTouchHandler.h"
 #import "RCTUIManager.h"
+#import "RCTUIManagerObserverCoordinator.h"
 #import "RCTUIManagerUtils.h"
 
-@interface RCTSurface () <RCTSurfaceRootShadowViewDelegate>
+@interface RCTSurface () <RCTSurfaceRootShadowViewDelegate, RCTUIManagerObserver>
 @end
 
 @implementation RCTSurface {
@@ -42,6 +43,7 @@
   CGSize _minimumSize;
   CGSize _maximumSize;
   CGSize _intrinsicSize;
+  RCTUIManagerMountingBlock _mountingBlock;
 
   // The Main thread only
   RCTSurfaceView *_Nullable _view;
@@ -50,13 +52,17 @@
   // Semaphores
   dispatch_semaphore_t _rootShadowViewDidStartRenderingSemaphore;
   dispatch_semaphore_t _rootShadowViewDidStartLayingOutSemaphore;
+  dispatch_semaphore_t _uiManagerDidPerformMountingSemaphore;
+
+  // Atomics
+  atomic_bool _waitingForMountingStageOnMainQueue;
 }
 
 - (instancetype)initWithBridge:(RCTBridge *)bridge
                     moduleName:(NSString *)moduleName
              initialProperties:(NSDictionary *)initialProperties
 {
-  RCTAssert(bridge.valid, @"Valid bridge is required to instanciate `RCTSurface`.");
+  RCTAssert(bridge.valid, @"Valid bridge is required to instantiate `RCTSurface`.");
 
   if (self = [super init]) {
     _bridge = bridge;
@@ -64,8 +70,10 @@
     _moduleName = moduleName;
     _properties = [initialProperties copy];
     _rootViewTag = RCTAllocateRootViewTag();
+
     _rootShadowViewDidStartRenderingSemaphore = dispatch_semaphore_create(0);
     _rootShadowViewDidStartLayingOutSemaphore = dispatch_semaphore_create(0);
+    _uiManagerDidPerformMountingSemaphore = dispatch_semaphore_create(0);
 
     _minimumSize = CGSizeZero;
     _maximumSize = CGSizeMake(CGFLOAT_MAX, CGFLOAT_MAX);
@@ -86,6 +94,8 @@
       _stage = _stage | RCTSurfaceStageBridgeDidLoad;
     }
 
+    [_bridge.uiManager.observerCoordinator addObserver:self];
+
     [self _registerRootView];
     [self _run];
   }
@@ -96,10 +106,9 @@
 - (void)dealloc
 {
   [self _stop];
-  [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
-#pragma mark - Immutable Properties (no need to enforce synchonization)
+#pragma mark - Immutable Properties (no need to enforce synchronization)
 
 - (RCTBridge *)bridge
 {
@@ -116,7 +125,7 @@
   return _rootViewTag;
 }
 
-#pragma mark - Convinience Internal Thread-Safe Properties
+#pragma mark - Convenience Internal Thread-Safe Properties
 
 - (RCTBridge *)_batchedBridge
 {
@@ -156,14 +165,14 @@
     return;
   }
 
-  RCTSurfaceRootView *rootView =
-    (RCTSurfaceRootView *)[self._uiManager viewForReactTag:self->_rootViewTag];
+  RCTSurfaceRootView *rootView = (RCTSurfaceRootView *)[self._uiManager viewForReactTag:self->_rootViewTag];
   if (!rootView) {
     return;
   }
 
-  RCTAssert([rootView isKindOfClass:[RCTSurfaceRootView class]],
-    @"Received root view is not an instanse of `RCTSurfaceRootView`.");
+  RCTAssert(
+      [rootView isKindOfClass:[RCTSurfaceRootView class]],
+      @"Received root view is not an instance of `RCTSurfaceRootView`.");
 
   if (rootView.superview != view) {
     view.rootView = rootView;
@@ -172,10 +181,14 @@
 
 #pragma mark - Bridge Events
 
-- (void)handleBridgeWillLoadJavaScriptNotification:(NSNotification *)notification
+- (void)handleBridgeWillLoadJavaScriptNotification:(__unused NSNotification *)notification
 {
   RCTAssertMainQueue();
 
+  // Reset states because the bridge is reloading. This is similar to initialization phase.
+  _stage = RCTSurfaceStageSurfaceDidInitialize;
+  _view = nil;
+  _touchHandler = nil;
   [self _setStage:RCTSurfaceStageBridgeDidLoad];
 }
 
@@ -199,6 +212,7 @@
   }
 
   if (isRerunNeeded) {
+    [self _registerRootView];
     [self _run];
   }
 }
@@ -283,29 +297,21 @@
     return;
   }
 
-  NSDictionary *applicationParameters =
-    @{
-      @"rootTag": _rootViewTag,
-      @"initialProps": properties,
-    };
+  NSDictionary *applicationParameters = @{
+    @"rootTag" : _rootViewTag,
+    @"initialProps" : properties,
+  };
 
   RCTLogInfo(@"Running surface %@ (%@)", _moduleName, applicationParameters);
 
-  [batchedBridge enqueueJSCall:@"AppRegistry"
-                        method:@"runApplication"
-                          args:@[_moduleName, applicationParameters]
-                    completion:NULL];
+  [self mountReactComponentWithBridge:batchedBridge moduleName:_moduleName params:applicationParameters];
 
   [self _setStage:RCTSurfaceStageSurfaceDidRun];
 }
 
 - (void)_stop
 {
-  RCTBridge *batchedBridge = self._batchedBridge;
-  [batchedBridge enqueueJSCall:@"AppRegistry"
-                        method:@"unmountApplicationComponentAtRootTag"
-                          args:@[self->_rootViewTag]
-                    completion:NULL];
+  [self unmountReactComponentWithBridge:self._batchedBridge rootViewTag:self->_rootViewTag];
 }
 
 - (void)_registerRootView
@@ -323,37 +329,38 @@
 
   RCTUIManager *uiManager = batchedBridge.uiManager;
 
-  RCTExecuteOnUIManagerQueue(^{
+  // If we are on the main queue now, we have to proceed synchronously.
+  // Otherwise, we cannot perform synchronous waiting for some stages later.
+  (RCTIsMainQueue() ? RCTUnsafeExecuteOnUIManagerQueueSync : RCTExecuteOnUIManagerQueue)(^{
     [uiManager registerRootViewTag:self->_rootViewTag];
 
     RCTSurfaceRootShadowView *rootShadowView =
-      (RCTSurfaceRootShadowView *)[uiManager shadowViewForReactTag:self->_rootViewTag];
-    RCTAssert([rootShadowView isKindOfClass:[RCTSurfaceRootShadowView class]],
-      @"Received shadow view is not an instanse of `RCTSurfaceRootShadowView`.");
+        (RCTSurfaceRootShadowView *)[uiManager shadowViewForReactTag:self->_rootViewTag];
+    RCTAssert(
+        [rootShadowView isKindOfClass:[RCTSurfaceRootShadowView class]],
+        @"Received shadow view is not an instance of `RCTSurfaceRootShadowView`.");
 
-    [rootShadowView setMinimumSize:minimumSize
-                       maximumSize:maximumSize];
+    [rootShadowView setMinimumSize:minimumSize maximumSize:maximumSize];
     rootShadowView.delegate = self;
   });
 }
 
 #pragma mark - Layout
 
-- (CGSize)sizeThatFitsMinimumSize:(CGSize)minimumSize
-                      maximumSize:(CGSize)maximumSize
+- (CGSize)sizeThatFitsMinimumSize:(CGSize)minimumSize maximumSize:(CGSize)maximumSize
 {
   RCTUIManager *uiManager = self._uiManager;
   __block CGSize fittingSize;
 
   RCTUnsafeExecuteOnUIManagerQueueSync(^{
     RCTSurfaceRootShadowView *rootShadowView =
-      (RCTSurfaceRootShadowView *)[uiManager shadowViewForReactTag:self->_rootViewTag];
+        (RCTSurfaceRootShadowView *)[uiManager shadowViewForReactTag:self->_rootViewTag];
 
-    RCTAssert([rootShadowView isKindOfClass:[RCTSurfaceRootShadowView class]],
-      @"Received shadow view is not an instanse of `RCTSurfaceRootShadowView`.");
+    RCTAssert(
+        [rootShadowView isKindOfClass:[RCTSurfaceRootShadowView class]],
+        @"Received shadow view is not an instance of `RCTSurfaceRootShadowView`.");
 
-    fittingSize = [rootShadowView sizeThatFitsMinimumSize:minimumSize
-                                              maximumSize:maximumSize];
+    fittingSize = [rootShadowView sizeThatFitsMinimumSize:minimumSize maximumSize:maximumSize];
   });
 
   return fittingSize;
@@ -366,13 +373,11 @@
   [self setMinimumSize:size maximumSize:size];
 }
 
-- (void)setMinimumSize:(CGSize)minimumSize
-           maximumSize:(CGSize)maximumSize
+- (void)setMinimumSize:(CGSize)minimumSize maximumSize:(CGSize)maximumSize
 {
   {
     std::lock_guard<std::mutex> lock(_mutex);
-    if (CGSizeEqualToSize(minimumSize, _minimumSize) &&
-        CGSizeEqualToSize(maximumSize, _maximumSize)) {
+    if (CGSizeEqualToSize(minimumSize, _minimumSize) && CGSizeEqualToSize(maximumSize, _maximumSize)) {
       return;
     }
 
@@ -384,9 +389,10 @@
 
   RCTUnsafeExecuteOnUIManagerQueueSync(^{
     RCTSurfaceRootShadowView *rootShadowView =
-      (RCTSurfaceRootShadowView *)[uiManager shadowViewForReactTag:self->_rootViewTag];
-    RCTAssert([rootShadowView isKindOfClass:[RCTSurfaceRootShadowView class]],
-      @"Received shadow view is not an instanse of `RCTSurfaceRootShadowView`.");
+        (RCTSurfaceRootShadowView *)[uiManager shadowViewForReactTag:self->_rootViewTag];
+    RCTAssert(
+        [rootShadowView isKindOfClass:[RCTSurfaceRootShadowView class]],
+        @"Received shadow view is not an instance of `RCTSurfaceRootShadowView`.");
 
     [rootShadowView setMinimumSize:minimumSize maximumSize:maximumSize];
     [uiManager setNeedsLayout];
@@ -435,14 +441,18 @@
 
 - (BOOL)synchronouslyWaitForStage:(RCTSurfaceStage)stage timeout:(NSTimeInterval)timeout
 {
-  if (RCTIsMainQueue() && (stage == RCTSurfaceStageSurfaceDidInitialRendering)) {
-    // This case *temporary* does not supported.
-    stage = RCTSurfaceStageSurfaceDidInitialLayout;
-  }
-
   if (RCTIsUIManagerQueue()) {
     RCTLogInfo(@"Synchronous waiting is not supported on UIManager queue.");
     return NO;
+  }
+
+  if (RCTIsMainQueue() && (stage & RCTSurfaceStageSurfaceDidInitialMounting)) {
+    // All main-threaded execution (especially mounting process) has to be
+    // intercepted, captured and performed synchronously at the end of this method
+    // right after the semaphore signals.
+
+    // Atomic variant of `_waitingForMountingStageOnMainQueue = YES;`
+    atomic_fetch_or(&_waitingForMountingStageOnMainQueue, 1);
   }
 
   dispatch_semaphore_t semaphore;
@@ -453,35 +463,59 @@
     case RCTSurfaceStageSurfaceDidInitialRendering:
       semaphore = _rootShadowViewDidStartRenderingSemaphore;
       break;
+    case RCTSurfaceStageSurfaceDidInitialMounting:
+      semaphore = _uiManagerDidPerformMountingSemaphore;
+      break;
     default:
-      RCTAssert(NO, @"Only waiting for `RCTSurfaceStageSurfaceDidInitialRendering` and `RCTSurfaceStageSurfaceDidInitialLayout` stages is supported.");
+      RCTAssert(
+          NO,
+          @"Only waiting for `RCTSurfaceStageSurfaceDidInitialRendering`, `RCTSurfaceStageSurfaceDidInitialLayout` and `RCTSurfaceStageSurfaceDidInitialMounting` stages are supported.");
   }
 
-  BOOL timeoutOccured = dispatch_semaphore_wait(semaphore, dispatch_time(DISPATCH_TIME_NOW, timeout * NSEC_PER_SEC));
-  if (!timeoutOccured) {
+  BOOL timeoutOccurred = dispatch_semaphore_wait(semaphore, dispatch_time(DISPATCH_TIME_NOW, timeout * NSEC_PER_SEC));
+
+  // Atomic equivalent of `_waitingForMountingStageOnMainQueue = NO;`.
+  atomic_fetch_and(&_waitingForMountingStageOnMainQueue, 0);
+
+  if (!timeoutOccurred) {
     // Balancing the semaphore.
-    // Note: `dispatch_semaphore_wait` reverts the decrement in case when timeout occured.
+    // Note: `dispatch_semaphore_wait` reverts the decrement in case when timeout occurred.
     dispatch_semaphore_signal(semaphore);
   }
 
-  return !timeoutOccured;
+  if (RCTIsMainQueue() && (stage & RCTSurfaceStageSurfaceDidInitialMounting)) {
+    // Time to apply captured mounting block.
+    RCTUIManagerMountingBlock mountingBlock;
+    {
+      std::lock_guard<std::mutex> lock(_mutex);
+      mountingBlock = _mountingBlock;
+      _mountingBlock = nil;
+    }
+
+    if (mountingBlock) {
+      mountingBlock();
+      [self _mountRootViewIfNeeded];
+    }
+  }
+
+  return !timeoutOccurred;
 }
 
 #pragma mark - RCTSurfaceRootShadowViewDelegate
 
-- (void)rootShadowView:(RCTRootShadowView *)rootShadowView didChangeIntrinsicSize:(CGSize)intrinsicSize
+- (void)rootShadowView:(__unused RCTRootShadowView *)rootShadowView didChangeIntrinsicSize:(CGSize)intrinsicSize
 {
   self.intrinsicSize = intrinsicSize;
 }
 
-- (void)rootShadowViewDidStartRendering:(RCTSurfaceRootShadowView *)rootShadowView
+- (void)rootShadowViewDidStartRendering:(__unused RCTSurfaceRootShadowView *)rootShadowView
 {
   [self _setStage:RCTSurfaceStageSurfaceDidInitialRendering];
 
   dispatch_semaphore_signal(_rootShadowViewDidStartRenderingSemaphore);
 }
 
-- (void)rootShadowViewDidStartLayingOut:(RCTSurfaceRootShadowView *)rootShadowView
+- (void)rootShadowViewDidStartLayingOut:(__unused RCTSurfaceRootShadowView *)rootShadowView
 {
   [self _setStage:RCTSurfaceStageSurfaceDidInitialLayout];
 
@@ -491,6 +525,68 @@
     // Rendering is happening, let's mount `rootView` into `view` if we already didn't do this.
     [self _mountRootViewIfNeeded];
   });
+}
+
+#pragma mark - RCTUIManagerObserver
+
+- (BOOL)uiManager:(__unused RCTUIManager *)manager performMountingWithBlock:(RCTUIManagerMountingBlock)block
+{
+  if (atomic_load(&_waitingForMountingStageOnMainQueue) && (self.stage & RCTSurfaceStageSurfaceDidInitialLayout)) {
+    // Atomic equivalent of `_waitingForMountingStageOnMainQueue = NO;`.
+    atomic_fetch_and(&_waitingForMountingStageOnMainQueue, 0);
+
+    {
+      std::lock_guard<std::mutex> lock(_mutex);
+      _mountingBlock = block;
+    }
+    return YES;
+  }
+
+  return NO;
+}
+
+- (void)uiManagerDidPerformMounting:(__unused RCTUIManager *)manager
+{
+  if (self.stage & RCTSurfaceStageSurfaceDidInitialLayout) {
+    [self _setStage:RCTSurfaceStageSurfaceDidInitialMounting];
+    dispatch_semaphore_signal(_uiManagerDidPerformMountingSemaphore);
+
+    // No need to listen to UIManager anymore.
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
+      [self->_bridge.uiManager.observerCoordinator removeObserver:self];
+    });
+  }
+}
+
+- (BOOL)start
+{
+  // Does nothing.
+  // The Start&Stop feature is not implemented for regular Surface yet.
+  return YES;
+}
+
+- (BOOL)stop
+{
+  // Does nothing.
+  // The Start&Stop feature is not implemented for regular Surface yet.
+  return YES;
+}
+
+#pragma mark - Mounting/Unmounting of React components
+
+- (void)mountReactComponentWithBridge:(RCTBridge *)bridge
+                           moduleName:(NSString *)moduleName
+                               params:(NSDictionary *)params
+{
+  [bridge enqueueJSCall:@"AppRegistry" method:@"runApplication" args:@[ moduleName, params ] completion:NULL];
+}
+
+- (void)unmountReactComponentWithBridge:(RCTBridge *)bridge rootViewTag:(NSNumber *)rootViewTag
+{
+  [bridge enqueueJSCall:@"AppRegistry"
+                 method:@"unmountApplicationComponentAtRootTag"
+                   args:@[ rootViewTag ]
+             completion:NULL];
 }
 
 @end
